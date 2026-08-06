@@ -2,8 +2,6 @@ FROM alpine:3.20.3
 
 ENV IMAGE_NAME=puppeteer-api
 ENV IMAGE_VERSION=2.1
-LABEL docker.image.name=$IMAGE_NAME
-LABEL image.version=$IMAGE_VERSION
 STOPSIGNAL SIGTERM
 
 # install dependencies
@@ -35,3 +33,8 @@ ENTRYPOINT ["/bootstrap.sh"]
 HEALTHCHECK --interval=10s --timeout=5s --retries=3 CMD [ "/healthcheck.sh" ]
 
 EXPOSE 9222 8000
+
+
+LABEL org.opencontainers.image.source=https://github.com/esyoil-GmbH/docker-puppeteer-api
+LABEL image.version=$IMAGE_VERSION
+LABEL docker.image.name=$IMAGE_NAME
