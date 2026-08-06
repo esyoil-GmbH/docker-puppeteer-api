@@ -1,7 +1,7 @@
 FROM alpine:3.20.3
 
 ENV IMAGE_NAME=puppeteer-api
-ENV IMAGE_VERSION=2.1
+ENV IMAGE_VERSION=2.1.0-esy.1
 STOPSIGNAL SIGTERM
 
 # install dependencies

@@ -15,7 +15,8 @@ const fs = require('fs');
 var SALT;
 if (process.env.SALT || process.env.SALT_FILE) {
     SALT = process.env.SALT || fs.readFileSync(process.env.SALT_FILE, 'utf8');
-    console.log(`Using '${SALT}' as salt`);
+    // do not print the salt itself — container logs are shipped to central logging
+    console.log(`Using provided salt (${SALT.length} chars)`);
 } else {
     SALT = "NO-SALT";
     console.warn(`Warning: using default '${SALT}' salt, you should provide some randomly generated string as SALT environment variable`);
@@ -59,8 +60,12 @@ async function handleRequest(req, res, returnFullPage = false) {
         console.log(`[${sesionId}]`, `sending data with: ${data.length} bytes`);
         res.send(data);
     }).catch((data) => {
-        console.log(`[${sesionId}]`, `sending error ${data[0]}: ${data[1]}`);
-        res.status(data[0]).send(data[1]);
+        // scrape() rejects with [status, message]; anything else (a real Error
+        // that slipped through) must not crash the response handling too —
+        // res.status(undefined) would throw again.
+        const [status, message] = Array.isArray(data) ? data : [500, String((data && data.message) || data)];
+        console.log(`[${sesionId}]`, `sending error ${status}: ${message}`);
+        res.status(status).send(message);
     })
 }
 
@@ -78,6 +83,18 @@ app.get('/status', (req, res) => {
         "version": packageInfo.version
     };
     res.send(response);
+});
+
+// Last-resort guards: an error that escapes a render must never kill the
+// process — a dead listener serves ECONNREFUSED to every client until the
+// Docker healthcheck replaces the container (~30-60s outage). Browsers are
+// per-request, so surviving here leaks at most one chrome instance, which is
+// far cheaper than the outage.
+process.on('unhandledRejection', (reason) => {
+    console.error('unhandled rejection (surviving):', reason instanceof Error ? reason.stack : reason);
+});
+process.on('uncaughtException', (err) => {
+    console.error('uncaught exception (surviving):', (err && err.stack) || err);
 });
 
 app.listen(PORT, () => console.log(`Scraper API version ${packageInfo.version} is listening on port: ${PORT}`));

@@ -51,38 +51,61 @@ async function scrape({ url, selector, proxy }, sessionId = "local", returnFullP
             }
 
             async function check() {
-                let elements = await page.$$(selector);
-                if (elements.length) {
-                    if (sessionId) console.log(`[${sessionId}]`, `element with selector: '${selector}' appeared, resolving content`);
-                    if (returnFullPage) {
-                        resolve(await page.content());
-                    } else {
-                        const elementContents = (await Promise.all(
-                          elements.map(element => page.evaluate(el => el.outerHTML, element))
-                        )).join("\n");
-                        resolve(elementContents);
+                try {
+                    let elements = await page.$$(selector);
+                    if (elements.length) {
+                        if (sessionId) console.log(`[${sessionId}]`, `element with selector: '${selector}' appeared, resolving content`);
+                        if (returnFullPage) {
+                            resolve(await page.content());
+                        } else {
+                            const elementContents = (await Promise.all(
+                              elements.map(element => page.evaluate(el => el.outerHTML, element))
+                            )).join("\n");
+                            resolve(elementContents);
+                        }
+                        await stop();
+                    } else if (++j >= 60) { // 60 secs timeout
+                        if (sessionId) console.log(`[${sessionId}]`, `element with selector: '${selector}' didn't appear, timeout`);
+                        reject([404, 'didn\'t appear']);
+                        await stop();
                     }
-                    await stop();
-                } else if (++j === 60) { // 60 secs timeout
-                    if (sessionId) console.log(`[${sessionId}]`, `element with selector: '${selector}' didn't appear, timeout`);
-                    reject([404, 'didn\'t appear']);
-                    await stop();
+                } catch (e) {
+                    // Transient while the page navigates (e.g. an anti-bot challenge
+                    // redirecting to the real page destroys the execution context
+                    // mid-poll): skip this tick and keep polling — the element usually
+                    // appears after the navigation settles. Before this guard the error
+                    // escaped the interval callback as an unhandled rejection and killed
+                    // the whole process: one bad render took the service down for every
+                    // client until the Docker healthcheck replaced the container.
+                    if (sessionId) console.log(`[${sessionId}]`, `poll failed (${e.message}), retrying`);
+                    if (++j >= 60) {
+                        reject([404, `didn't appear (last poll error: ${e.message})`]);
+                        await stop();
+                    }
                 }
             }
 
             let i = null, k = null;
             page.once('load', async () => {
-                if (k) {
-                    if (sessionId) console.log(`[${sessionId}]`, 'clearing wait for page load timeout');
-                    clearTimeout(k);
-                }
+                // Guarded like check(): an error thrown in this event callback is an
+                // unhandled rejection, which terminates the node process.
+                try {
+                    if (k) {
+                        if (sessionId) console.log(`[${sessionId}]`, 'clearing wait for page load timeout');
+                        clearTimeout(k);
+                    }
 
-                if (selector) {
-                    if (sessionId) console.log(`[${sessionId}]`, `page loaded; looking for selector: '${selector}'. setting 1000 ms refresh interval`);
-                    i = setInterval(check, 1000);
-                } else {
-                    if (sessionId) console.log(`[${sessionId}]`, `page loaded; resolving content immediately`);
-                    resolve(await page.content());
+                    if (selector) {
+                        if (sessionId) console.log(`[${sessionId}]`, `page loaded; looking for selector: '${selector}'. setting 1000 ms refresh interval`);
+                        i = setInterval(check, 1000);
+                    } else {
+                        if (sessionId) console.log(`[${sessionId}]`, `page loaded; resolving content immediately`);
+                        resolve(await page.content());
+                        await stop();
+                    }
+                } catch (e) {
+                    if (sessionId) console.error(`[${sessionId}]`, `onload handling failed: ${e.message}`);
+                    reject([500, `puppeteer error: ${e.message}`]);
                     await stop();
                 }
             });
