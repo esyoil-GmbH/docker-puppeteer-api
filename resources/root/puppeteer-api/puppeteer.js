@@ -16,28 +16,26 @@ const program = require('commander');
  * @param {string} selector CSS selector to check if element appeared, if empty is returns immediately after page is loaded
  * @return {Promise<string>} HTML content after element appeared
  */
-async function scrape({url, selector}, sessionId = "local", returnFullPage = false) {
+async function scrape({ url, selector, proxy }, sessionId = "local", returnFullPage = false) {
 
     return new Promise(async (resolve, reject) => {
         try {
             if (sessionId) console.log(`[${sessionId}]`, 'starting chrome browser');
+            const args = ['--no-sandbox', '--disable-gpu'];
+            if (proxy) args.push(`--proxy-server=${proxy}`)
+            
             // see https://github.com/puppeteer/puppeteer/issues/1793#issuecomment-438971272
             const browser = await puppeteer.launch({
                 executablePath: '/usr/bin/chromium-browser',
-                args: ['--no-sandbox', '--disable-gpu']
+                args
             });
 
-            let j = 0;
             const page = await browser.newPage();
             if (process.env.USER_AGENT) {
                 page.setUserAgent(process.env.USER_AGENT);
             }
 
             async function stop() {
-                if (i) {
-                    if (sessionId) console.log(`[${sessionId}]`, 'clearing refresh interval');
-                    clearInterval(i);
-                }
                 if (sessionId) console.log(`[${sessionId}]`, 'closing chrome browser');
                 try {
                     await page.close();
@@ -47,39 +45,46 @@ async function scrape({url, selector}, sessionId = "local", returnFullPage = fal
                 }
             }
 
-            async function check() {
-                let elements = await page.$$(selector);
-                if (elements.length) {
-                    if (sessionId) console.log(`[${sessionId}]`, `element with selector: '${selector}' appeared, resolving content`);
-                    if (returnFullPage) {
-                        resolve(await page.content());
+            let k = null;
+            page.once('load', async () => {
+                // The whole callback is guarded: an error thrown in an event callback
+                // is an unhandled rejection, which terminates the node process.
+                try {
+                    if (k) {
+                        if (sessionId) console.log(`[${sessionId}]`, 'clearing wait for page load timeout');
+                        clearTimeout(k);
+                    }
+
+                    if (selector) {
+                        if (sessionId) console.log(`[${sessionId}]`, `page loaded; waiting for selector: '${selector}' (up to 60s)`);
+                        // Survives page navigations (e.g. an anti-bot challenge
+                        // redirecting to the real page): puppeteer's WaitTask re-arms
+                        // itself when the execution context is destroyed, unlike a
+                        // hand-rolled page.$$ poll, which throws.
+                        await page.waitForSelector(selector, { timeout: 60000 });
+                        if (sessionId) console.log(`[${sessionId}]`, `element with selector: '${selector}' appeared, resolving content`);
+                        if (returnFullPage) {
+                            resolve(await page.content());
+                        } else {
+                            const elements = await page.$$(selector);
+                            const elementContents = (await Promise.all(
+                              elements.map(element => page.evaluate(el => el.outerHTML, element))
+                            )).join("\n");
+                            resolve(elementContents);
+                        }
                     } else {
-                        const elementContents = (await Promise.all(
-                          elements.map(element => page.evaluate(el => el.outerHTML, element))
-                        )).join("\n");
-                        resolve(elementContents);
+                        if (sessionId) console.log(`[${sessionId}]`, `page loaded; resolving content immediately`);
+                        resolve(await page.content());
                     }
                     await stop();
-                } else if (++j === 60) { // 60 secs timeout
-                    if (sessionId) console.log(`[${sessionId}]`, `element with selector: '${selector}' didn't appear, timeout`);
-                    reject([404, 'didn\'t appear']);
-                    await stop();
-                }
-            }
-
-            let i = null, k = null;
-            page.once('load', async () => {
-                if (k) {
-                    if (sessionId) console.log(`[${sessionId}]`, 'clearing wait for page load timeout');
-                    clearTimeout(k);
-                }
-
-                if (selector) {
-                    if (sessionId) console.log(`[${sessionId}]`, `page loaded; looking for selector: '${selector}'. setting 1000 ms refresh interval`);
-                    i = setInterval(check, 1000);
-                } else {
-                    if (sessionId) console.log(`[${sessionId}]`, `page loaded; resolving content immediately`);
-                    resolve(await page.content());
+                } catch (e) {
+                    if (e.name === 'TimeoutError') {
+                        if (sessionId) console.log(`[${sessionId}]`, `element with selector: '${selector}' didn't appear, timeout`);
+                        reject([404, 'didn\'t appear']);
+                    } else {
+                        if (sessionId) console.error(`[${sessionId}]`, `onload handling failed: ${e.message}`);
+                        reject([500, `puppeteer error: ${e.message}`]);
+                    }
                     await stop();
                 }
             });
